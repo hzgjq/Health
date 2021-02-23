@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+
+#系统健康检测参数开始
+#希望报告的SMART属性
+SMARTAttributes="05 C4 C5 C6 C7"
+#不可用的值显示为
+Unavailable="N/A"
+#温度单位
+TemperatureUnit="°C"
+#处理器传感器名称
+CPUSensorsName="cpu"
+#处理器低温阈值
+CPULowTemperature="15"
+#处理器高温阈值
+CPUHighTemperature="65"
+#处理器过热温度
+CPUOverheatedTemperature="80"
+#驱动器低温阈值
+DeviceLowTemperature="10"
+#驱动器高温阈值
+DeviceHighTemperature="50"
+#驱动器过热温度
+DeviceOverheatedTemperature="60"
+#风扇传感器名称
+FanSensorsName="fan"
+#风扇转速单位
+FanRotationalUnit=" rpm"
+#风扇故障转速阈值
+FanStopRotational="500"
+#风扇转速过低阈值
+FanMinRotational="1000"
+#风扇转速过高阈值
+FanMaxRotational="4000"
+#简报推送时间，每天该时间后的第一次运行推送简报，为空则每次运行均推送简报
+PushTime="12:00"
+#推送时间记录文件
+PushTimeStamp="/tmp/health.push.timestamp"
+#健康简报发送命令
+PushCMD="dingtalk"
+#系统健康检测参数结束
+
+
+ScriptDir="$(dirname "$(readlink -nf "$0")")"
+[[ ${PushCMD:0:1} != "/" ]] && PushCMD="${ScriptDir}/${PushCMD}"
+exec 2>"/dev/null"
+
+function _red() { echo "\033[1;31m${1}\033[0m"; }
+function _green() { echo "\033[1;32m${1}\033[0m"; }
+function _yellow() { echo "\033[1;33m${1}\033[0m"; }
+function _blue() { echo "\033[1;34m${1}\033[0m"; }
+function _purple() { echo "\033[1;35m${1}\033[0m"; }
+function _cyan() { echo "\033[1;36m${1}\033[0m"; }
+function _white() { echo "\033[1;37m${1}\033[0m"; }
+
+function FormatSensorsValue() {
+	if [[ "${2}" == "SMART" ]]; then
+		SMARTWhenFailed="$(echo ${1} | cut -d ' ' -f 9)"
+		Attribute="$(echo ${1} | cut -d ' ' -f 10-)"
+		[[ -z "${Attribute}" ]] && SMARTAttribute="$(_white "${Unavailable}")" && Attribute="${Unavailable}" && return
+		case "${SMARTWhenFailed,,}" in
+			"-") [[ "${Attribute}" -eq "0" ]] && SMARTAttribute="$(_green "${Attribute}")" || SMARTAttribute="$(_yellow "${Attribute}")";;
+			*) SMARTAttribute="$(_red "${Attribute}")";;&
+				"failing_now") Alert="即将故障，";;
+				"in_the_past") Critical="曾经出错，";;
+				*) Error="出现问题，";;
+		esac
+		[[ -n "${Alert}${Critical}${Error}" ]] && SMARTStatus="${Error}${Critical}${Alert}"
+		return
+	elif [[ "${2}" == "${FanSensorsName}" ]]; then
+		if [[ "${1}" -lt "${FanStopRotational}" ]]; then
+			RotationalStatus="Failed"
+			RotationalColor="$(_red "${1}${FanRotationalUnit}")"
+		elif [[ "${1}" -lt "${FanMinRotational}" ]]; then
+			RotationalColor="$(_yellow "${1}${FanRotationalUnit}")"
+		elif [[ "${1}" -lt "${FanMaxRotational}" ]]; then
+			RotationalColor="$(_green "${1}${FanRotationalUnit}")"
+		else
+			RotationalColor="$(_yellow "${1}${FanRotationalUnit}")"
+		fi
+		return
+	elif [[ "${2}" == "${CPUSensorsName}" ]]; then
+		LowTemperature="${CPULowTemperature}"
+		HighTemperature="${CPUHighTemperature}"
+		OverheatedTemperature="${CPUOverheatedTemperature}"
+	else
+		LowTemperature="${DeviceLowTemperature}"
+		HighTemperature="${DeviceHighTemperature}"
+		OverheatedTemperature="${DeviceOverheatedTemperature}"
+	fi
+	if [[ "${1}" == "${Unavailable}" ]]; then
+		TemperatureColor="$(_white "${Unavailable}")"
+	elif [[ "${1%.*}" -lt "${LowTemperature}" ]]; then
+		TemperatureStatus="Microtherm"
+		TemperatureColor="$(_cyan "${1}${TemperatureUnit}")"
+	elif [[ "${1%.*}" -lt "${HighTemperature}" ]]; then
+		TemperatureColor="$(_green "${1}${TemperatureUnit}")"
+	elif [[ "${1%.*}" -lt "${OverheatedTemperature}" ]]; then
+		TemperatureColor="$(_yellow "${1}${TemperatureUnit}")"
+	else
+		TemperatureStatus="Overheated"
+		TemperatureColor="$(_red "${1}${TemperatureUnit}")"
+	fi
+}
+
+function ValueRange() {
+	[[ "${1}" == "${Unavailable}" ]] && Range="${2}" || Range="${1}"
+	Min="${Range%%|**}" && Max="${Range##*|}"
+	[[ "${2//./}" -lt "${Min//./}" ]] && Min="${2}"
+	[[ "${2//./}" -gt "${Max//./}" ]] && Max="${2}"
+	[[ "${Min}" == "${Max}" ]] && echo "${Min}" || echo "${Min}|${Max}"
+}
+
+Briefing=""
+hash sensors 2>/dev/null || Briefing="${Briefing}找不到命令 $(_white "sensors")，请先安装  $(_white "lm_sensors") 软件包\n"
+hash smartctl 2>/dev/null || Briefing="${Briefing}找不到命令 $(_white "smartctl")，请先安装  $(_white "smartmontools") 软件包"
+[[ -n "${Briefing}" ]] && echo -e "${Briefing}"; exit 1
+
+TemperatureRange="${Unavailable}"
+RotationalRange="${Unavailable}"
+MicrothermList=""
+OverheatedList=""
+FailedFanList=""
+DetailedList=""
+Briefing="${Briefing}${SplitLine}\n\t\t$(_white "散热情况简报")\n"
+MotherBoardSensors="$(sensors | grep -i "^physical \|^core \|^${FanSensorsName}")"
+for line in ${MotherBoardSensors// /}; do
+	SensorsName="$(expr "${line}" : '\(^[^:]*\)')"
+	SensorsName="${SensorsName,,}"
+	SensorsValue=""
+	if [[ "${SensorsName:0:10}" == "physicalid" ]]; then
+		SensorsValue="Temperature $(expr "${line}" : '^.*:+\([0-9\.\-]*\)')"
+		SensorsName="处理器${SensorsName:10}:\t"
+	elif [[ "${SensorsName:0:4}" == "core" ]]; then
+		SensorsValue="Temperature $(expr "${line}" : '^.*:+\([0-9\.\-]*\)')"
+		SensorsName="核心${SensorsName:4}:\t\t"
+	elif [[ "${SensorsName:0:3}" == "${FanSensorsName}" ]]; then
+		SensorsValue="Rotational $(expr "${line}" : '^.*:\([0-9]*\).*')"
+		SensorsName="风扇${SensorsName:3}:\t\t"
+	fi
+	case "${SensorsValue%% *}" in
+	"Temperature")
+		Temperature="${SensorsValue#* }"
+		FormatSensorsValue ${Temperature} "${CPUSensorsName}"
+		TemperatureRange="$(ValueRange "${TemperatureRange}" "${Temperature}")"
+		[[ "${TemperatureStatus}" == "Microtherm" ]] && MicrothermList="${MicrothermList}${SensorsName%%:*} "
+		[[ "${TemperatureStatus}" == "Overheated" ]] && OverheatedList="${OverheatedList}${SensorsName%%:*} "
+		DetailedList="${DetailedList}${SensorsName}${TemperatureColor}\n"
+		TemperatureStatus=""
+		;;
+	"Rotational")
+		Rotational="${SensorsValue#* }"
+		FormatSensorsValue "${Rotational}" "${FanSensorsName}"
+		if [[ "${Rotational}" -gt "0" ]]; then
+			RotationalRange="$(ValueRange "${RotationalRange}" "${Rotational}")"
+			[[ "${RotationalStatus}" == "Failed" ]] && FailedFanList="${FailedFanList}${SensorsName%%:*} "
+			DetailedList="${DetailedList}${SensorsName}${RotationalColor}\n"
+		fi
+		RotationalStatus=""
+		;;
+	esac
+done
+[[ "${TemperatureRange}" == "${Unavailable}" ]] && UnavailableList="无法获取处理器温度" && PushUnavailable="    ${UnavailableList}\n"
+[[ -z "${UnavailableList}${FailedFanList}${MicrothermList}${OverheatedList}${Abnormal}" ]] && Briefing="${Briefing}  散热系统检测正常"
+FormatSensorsValue ${TemperatureRange##*|} "${CPUSensorsName}"
+[[ -z "${UnavailableList}" ]] && Briefing="${Briefing}  处理器最高温度:${TemperatureColor}\n" || Briefing="${Briefing}  $(_white "${UnavailableList}")\n"
+[[ -n "${FailedFanList}" ]] && Briefing="${Briefing}  $(_white "${FailedFanList}")(_red "转速过低")\n" && PushFailed="    ${FailedFanList}转速过低[${RotationalRange%%|*} ${FanRotationalUnit}]\n"
+[[ -n "${OverheatedList}" ]] && Briefing="${Briefing}  $(_white "${OverheatedList}")(_red "过热")\n" && PushOverheated="    ${OverheatedList}过热[${TemperatureRange##*|} ${TemperatureUnit}]\n"
+[[ -n "${MicrothermList}" ]] && Briefing="${Briefing}  $(_white "${MicrothermList}")$(_cyan "过冷")\n" && PushMicrotherm="    ${MicrothermList}过冷[${TemperatureRange%%|*} ${TemperatureUnit}]\n"
+[[ -n "${DetailedList}" ]] && Briefing="${Briefing}${SplitLine}\n${DetailedList}"
+PushNormal="${PushNormal}    散热器：${RotationalRange/|/ - } ${FanRotationalUnit}\n"
+PushNormal="${PushNormal}    处理器：${TemperatureRange/|/ - } ${TemperatureUnit}\n"
+
+TemperatureStatus=""
+TemperatureRange="${Unavailable}"
+OverheatedList=""
+MicrothermList=""
+DisableDevice=""
+FailedDevice=""
+DetailedList=""
+Briefing="${Briefing}${SplitLine}\n\t\t$(_white "磁盘健康简报")\n"
+for i in {a..z}; do
+	DevicePath="/dev/sd${i}"
+	[[ -b "${DevicePath}" ]] || continue
+	Information="$(smartctl -a "${DevicePath}")"
+	DeviceName="$(expr "$(echo "${Information}" | grep 'Device Model')" : '.*: *\(.*\)')"
+	SerialNumber="$(expr "$(echo "${Information}" | grep 'Serial Number')" : '.*: *\(.*\)')"
+	Capacity="$(expr "$(echo "${Information}" | grep 'User Capacity')" : '.*:.*\[\(.*\)\]')"
+	Support="$(expr "$(echo "${Information}" | grep 'SMART support is')" : '.*: *\([^ ]*\)')"
+	DetailedList="${DetailedList}${SplitLine}\n设备: $(_white "${DevicePath##*/}")\t容量: $(_white "${Capacity}")\t"
+	if [[ "${Support,,}" == "enabled" ]]; then
+		DetailedList="${DetailedList}S.M.A.R.T. $(_green "已启用")"
+	else
+		DisableDevice="${DisableDevice}${DevicePath##*/} "
+		if [[ "${Support,,}" == "disabled" ]]; then
+			DetailedList="${DetailedList}S.M.A.R.T. $(_yellow "未启用")"
+		else
+			DetailedList="${DetailedList}S.M.A.R.T. $(_red "不支持")"
+		fi
+		Support=""
+	fi
+	DetailedList="${DetailedList}\n型号: $(_white "${DeviceName}")\t序列号: $(_white "${SerialNumber}")\n"
+	[[ -z "${Support}" ]] && continue
+	SMARTStatus="$(expr "$(echo "${Information}" | grep 'SMART overall-health self-assessment test result')" : '.*: *\(.*\)')"
+	Alert="" ; Critical=""; Error=""
+	Information="$(expr "${Information}" : '.*\(SMART Attributes Data.*\)SMART Error')"
+	FormatSensorsValue "$(echo "${Information}" | grep "^194 ")" "SMART"
+	FormatSensorsValue "${Attribute%% *}"
+	TemperatureRange="$(ValueRange "${TemperatureRange}" "${Attribute%% *}")"
+	[[ "${TemperatureStatus}" == "Microtherm" ]] && MicrothermList="${MicrothermList}${DevicePath##*/} "
+	[[ "${TemperatureStatus}" == "Overheated" ]] && OverheatedList="${OverheatedList}${DevicePath##*/} "
+	TemperatureStatus=""
+	FormatSensorsValue "$(echo "${Information}" | grep "^ *9 ")" "SMART"
+	PowerOnHours="${Attribute%% *}"
+	FormatSensorsValue "$(echo "${Information}" | grep "^ *12 ")" "SMART"
+	PowerCycleCount="${Attribute%% *}"
+	DetailedList="${DetailedList}温度: ${TemperatureColor}\t通电: $(_white "${PowerCycleCount}")次，累计$(_white "${PowerOnHours}")小时\n自检: "
+	PushSMART="${DevicePath##*/} "
+	for n in ${SMARTAttributes}; do
+		FormatSensorsValue "$(echo "${Information}" | grep "^ *$((16#${n})) ")" "SMART"
+		DetailedList="${DetailedList}${n}[${SMARTAttribute}]\t"
+		PushSMART="${PushSMART}${n}[${Attribute}] "
+	done
+	if [[ "${SMARTStatus,,}" == "passed" ]]; then
+		DetailedList="${DetailedList}\n\t\t$(_green "自检通过")\n"
+	else
+		FailedDevice="${FailedDevice}${DevicePath##*/} "
+		DetailedList="${DetailedList}\n\t设备$(_white "${SMARTStatus%%，}")，以下是详细自检数据:\n${Information}\n"
+		PushSMARTList="${PushSMARTList}${PushSMART%% }\n"
+	fi
+done
+[[ -z "${DisableDevice}${FailedDevice}${MicrothermList}${OverheatedList}" ]] && Briefing="${Briefing}  存储设备检测正常"
+FormatSensorsValue ${TemperatureRange##*|}
+Briefing="${Briefing}  设备最高温度:${TemperatureColor}\n"
+[[ -n "${DisableDevice}" ]] && Briefing="${Briefing}  设备 $(_white "${DisableDevice}")无法获取 S.M.A.R.T. 信息\n" && PushUnavailable="${PushUnavailable}    设备${DisableDevice}无法获取 S.M.A.R.T. 信息\n"
+[[ -n "${FailedDevice}" ]] && Briefing="${Briefing}  设备 $(_white "${FailedDevice}")发现问题\n" && PushFailed="${PushFailed}    设备 ${FailedDevice}发现问题\n"
+[[ -n "${OverheatedList}" ]] && Briefing="${Briefing}  设备 $(_white "${OverheatedList}")$(_red "过热")\n" && PushOverheated="${PushOverheated}    设备 ${OverheatedList}过热[${TemperatureRange##*|} ${TemperatureUnit}]\n"
+[[ -n "${MicrothermList}" ]] && Briefing="${Briefing}  设备 $(_white "${MicrothermList}")$(_cyan "过冷")\n" && PushMicrotherm="${PushMicrotherm}    设备 ${MicrothermList}过冷[${TemperatureRange%%|*} ${TemperatureUnit}]\n"
+[[ -n "${DetailedList}" ]] && Briefing="${Briefing}${DetailedList}"
+PushNormal="${PushNormal}    驱动器：${TemperatureRange/|/ - } ${TemperatureUnit}\n"
+
+DiskUsage="$(df -t vfat -t ext4 -t xfs -h)"
+DiskUsage="${DiskUsage//Filesystem/  文件系统}"
+DiskUsage="${DiskUsage//Size/大小}"
+DiskUsage="${DiskUsage//Used/已用}"
+DiskUsage="${DiskUsage//Avail/ 可用}"
+DiskUsage="${DiskUsage//Use%/占用}"
+DiskUsage="${DiskUsage//Mounted on/挂载点}"
+Briefing="${Briefing}${SplitLine}\n\t\t$(_white "磁盘使用情况")\n"
+Briefing="${Briefing}${SplitLine}\n${DiskUsage}\n${SplitLine}"
+
+[[ -r "${PushTimeStamp}" ]] && LastPushTime="$(cat "${PushTimeStamp}")"
+[[ "$(expr "${PushTime//:/}" : '0*\([0-9]*\)')" -le "$(expr "$(date "+%H%M")" : '0*\([0-9]*\)')" ]] && NeedPush="True"
+[[ "$(expr "${PushTime//:/}" : '0*\([0-9]*\)')" -le "$(expr "${LastPushTime:8:4}" : '0*\([0-9]*\)')" ]] && [[ "${LastPushTime:0:8}" -eq "$(date +%Y%m%d)" ]] && NeedPush=""
+[[ "${1,,}" == "cron" ]] && NeedPush="${NeedPush}${PushUnavailable}${PushFailed}${PushOverheated}${PushMicrotherm}" || echo -e "${Briefing}"
+[[ -z "${PushCMD}" ]] && exit
+[[ -z "${PushTime}" ]] && NeedPush="True"
+[[ -z "${NeedPush}" ]] && echo -e "$(date +%F\ %T) 系统健康检测完成" && exit
+
+[[ -n "${PushUnavailable}" ]] && Overview="检测失败、"
+[[ -n "${PushFailed}" ]] && Overview="设备故障、"
+[[ -n "${PushOverheated}${PushMicrotherm}" ]] && Overview="${Overview}温度异常、"
+if [[ -z "${Overview}" ]]; then
+	Overview="<font color='#009900'>运行正常</font>"
+	Details="${PushNormal}"
+else
+	Overview="<font color='#CC0000'>${Overview%%、}</font>"
+	Details="${PushUnavailable}${PushFailed}${PushOverheated}${PushMicrotherm}${PushSMARTList}"
+fi
+
+	[[ -z "${Overview}" ]] && Overview="<font color='#009900'>已成功迁移</font>"
+	MK_title="主机$(hostname)的健康简报"
+	MK_text="<font color='#0000CC'>$(date +"%F %T")</font>\n\n"
+	MK_text="${MK_text}来自主机<font color='#009900'>$(hostname)</font>的系统健康简报\n"
+	MK_text="${MK_text}## ${Overview}\n\n详细信息：\n\n${Details}"
+	Message_Data="{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"${MK_title}\",\"text\":\"${MK_text}\"}}"
+if "${PushCMD}" -q "${Message_Data}"; then
+	echo -e "$(date +%F\ %T) 系统健康简报推送成功"
+	echo -n "$(date +%Y%m%d%H%M)" > "${PushTimeStamp}"
+else
+	echo -e "$(date +%F\ %T) 系统健康简报推送失败"
+fi
