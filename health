@@ -31,10 +31,11 @@ FanStopRotational="500"
 FanMinRotational="1000"
 #风扇转速过高阈值
 FanMaxRotational="4000"
-#简报推送时间，每天该时间后的第一次运行推送简报，为空则每次运行均推送简报
+#简报推送时间，每天该时间后的第一次运行推送简报，为空则不推送简报。
 PushTime="12:00"
-#推送时间记录文件
+#推送时间记录文件，为空则每次运行均推送简报。
 PushTimeStamp="/tmp/health.push.timestamp"
+#如果处理器和驱动器高于过热温度或风扇转速低于故障转速，无论上面两个参数如何设置，都会推送简报。
 #健康简报发送命令
 PushCMD="dingtalkrobot"
 #系统健康检测参数结束
@@ -251,32 +252,30 @@ Briefing="${Briefing}${SplitLine}\n${DiskUsage}\n${SplitLine}"
 [[ -r "${PushTimeStamp}" ]] && LastPushTime="$(cat "${PushTimeStamp}")"
 [[ "$(expr "${PushTime//:/}" : '0*\([0-9]*\)')" -le "$(expr "$(date "+%H%M")" : '0*\([0-9]*\)')" ]] && NeedPush="True"
 [[ "$(expr "${PushTime//:/}" : '0*\([0-9]*\)')" -le "$(expr "${LastPushTime:8:4}" : '0*\([0-9]*\)')" ]] && [[ "${LastPushTime:0:8}" -eq "$(date +%Y%m%d)" ]] && NeedPush=""
+[[ -z "${PushTime}" ]] && NeedPush=""
 NeedPush="${NeedPush}${PushUnavailable}${PushFailed}${PushOverheated}${PushMicrotherm}"
 [[ "${1,,}" == "cron" ]] || echo -e "${Briefing}"
 [[ -z "${PushCMD}" ]] && exit
-[[ -z "${PushTime}" ]] && NeedPush="True"
 [[ -z "${NeedPush}" ]] && echo -e "$(date +%F\ %T) 系统健康检测完成" && exit
 
 [[ -n "${PushUnavailable}" ]] && Overview="检测失败、"
-[[ -n "${PushFailed}" ]] && Overview="设备故障、"
+[[ -n "${PushFailed}" ]] && Overview="${Overview}设备故障、"
 [[ -n "${PushOverheated}${PushMicrotherm}" ]] && Overview="${Overview}温度异常、"
 if [[ -z "${Overview}" ]]; then
 	Overview="<font color='#009900'>运行正常</font>"
 	Details="${PushNormal}"
 else
 	Overview="<font color='#CC0000'>${Overview%%、}</font>"
-	Details="${PushUnavailable}${PushFailed}${PushOverheated}${PushMicrotherm}${PushSMARTList}"
+	Details="${PushUnavailable}${PushFailed}${PushOverheated}${PushMicrotherm}${PushSMARTList}\n${PushNormal}"
 fi
-
-	[[ -z "${Overview}" ]] && Overview="<font color='#009900'>已成功迁移</font>"
-	MK_title="主机$(hostname)的健康简报"
-	MK_text="<font color='#0000CC'>$(date +"%F %T")</font>\n\n"
-	MK_text="${MK_text}来自主机<font color='#009900'>$(hostname)</font>的系统健康简报\n"
-	MK_text="${MK_text}## ${Overview}\n\n详细信息：\n\n${Details}"
-	Message_Data="{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"${MK_title}\",\"text\":\"${MK_text}\"}}"
+MK_title="主机$(hostname)的健康简报"
+MK_text="<font color='#0000CC'>$(date +"%F %T")</font>\n\n"
+MK_text="${MK_text}来自主机<font color='#009900'>$(hostname)</font>的系统健康简报\n"
+MK_text="${MK_text}## ${Overview}\n\n详细信息：\n\n${Details}"
+Message_Data="{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"${MK_title}\",\"text\":\"${MK_text}\"}}"
 if "${PushCMD}" -q "${Message_Data}"; then
 	echo -e "$(date +%F\ %T) 系统健康简报推送成功"
-	echo -n "$(date +%Y%m%d%H%M)" > "${PushTimeStamp}"
+	[[ -n "${PushTimeStamp}" ]] && echo -n "$(date +%Y%m%d%H%M)" > "${PushTimeStamp}"
 else
 	echo -e "$(date +%F\ %T) 系统健康简报推送失败"
 fi
