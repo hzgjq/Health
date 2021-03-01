@@ -36,7 +36,7 @@ PushTime="12:00"
 #推送时间记录文件
 PushTimeStamp="/tmp/health.push.timestamp"
 #健康简报发送命令
-PushCMD="dingtalk"
+PushCMD="dingtalkrobot"
 #系统健康检测参数结束
 
 
