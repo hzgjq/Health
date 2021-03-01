@@ -38,6 +38,7 @@ PushTimeStamp="/tmp/health.push.timestamp"
 #如果处理器和驱动器高于过热温度或风扇转速低于故障转速，无论上面两个参数如何设置，都会推送简报。
 #健康简报发送命令
 PushCMD="dingtalkrobot"
+SplitLine="======================================================"
 #系统健康检测参数结束
 
 
@@ -59,7 +60,7 @@ function FormatSensorsValue() {
 		Attribute="$(echo ${1} | cut -d ' ' -f 10-)"
 		[[ -z "${Attribute}" ]] && SMARTAttribute="$(_white "${Unavailable}")" && Attribute="${Unavailable}" && return
 		case "${SMARTWhenFailed,,}" in
-			"-") [[ "${Attribute}" -eq "0" ]] && SMARTAttribute="$(_green "${Attribute}")" || SMARTAttribute="$(_yellow "${Attribute}")";;
+			"-") [[ "${Attribute}" == "0" ]] && SMARTAttribute="$(_green "${Attribute}")" || SMARTAttribute="$(_yellow "${Attribute}")";;
 			*) SMARTAttribute="$(_red "${Attribute}")";;&
 				"failing_now") Alert="即将故障，";;
 				"in_the_past") Critical="曾经出错，";;
@@ -112,9 +113,9 @@ function ValueRange() {
 }
 
 Briefing=""
-hash sensors 2>/dev/null || Briefing="${Briefing}找不到命令 $(_white "sensors")，请先安装  $(_white "lm_sensors") 软件包\n"
-hash smartctl 2>/dev/null || Briefing="${Briefing}找不到命令 $(_white "smartctl")，请先安装  $(_white "smartmontools") 软件包"
-[[ -n "${Briefing}" ]] && echo -e "${Briefing}"; exit 1
+hash sensors || Briefing="${Briefing}找不到命令 $(_white "sensors")，请先安装  $(_white "lm_sensors") 软件包。\n"
+hash smartctl || Briefing="${Briefing}找不到命令 $(_white "smartctl")，请先安装  $(_white "smartmontools") 软件包。\n"
+[[ -n "${Briefing}" ]] && echo -en "${Briefing}" && exit 1
 
 TemperatureRange="${Unavailable}"
 RotationalRange="${Unavailable}"
