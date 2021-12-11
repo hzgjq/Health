@@ -8,7 +8,9 @@ Unavailable="N/A"
 #温度单位
 TemperatureUnit="°C"
 #处理器传感器名称
-CPUSensorsName="cpu"
+CPUSensorsName="package"
+#核心传感器名称
+CoreSensorsName="core"
 #处理器低温阈值
 CPULowTemperature="15"
 #处理器高温阈值
@@ -69,6 +71,7 @@ function FormatSensorsValue() {
 		[[ -n "${Alert}${Critical}${Error}" ]] && SMARTStatus="${Error}${Critical}${Alert}"
 		return
 	elif [[ "${2}" == "${FanSensorsName}" ]]; then
+		Rotational="${1}"
 		if [[ "${1}" -lt "${FanStopRotational}" ]]; then
 			RotationalStatus="Failed"
 			RotationalColor="$(_red "${1}${FanRotationalUnit}")"
@@ -81,10 +84,12 @@ function FormatSensorsValue() {
 		fi
 		return
 	elif [[ "${2}" == "${CPUSensorsName}" ]]; then
+		Temperature="${1}"
 		LowTemperature="${CPULowTemperature}"
 		HighTemperature="${CPUHighTemperature}"
 		OverheatedTemperature="${CPUOverheatedTemperature}"
 	else
+		Temperature="${1}"
 		LowTemperature="${DeviceLowTemperature}"
 		HighTemperature="${DeviceHighTemperature}"
 		OverheatedTemperature="${DeviceOverheatedTemperature}"
@@ -124,38 +129,39 @@ OverheatedList=""
 FailedFanList=""
 DetailedList=""
 Briefing="${Briefing}${SplitLine}\n\t\t$(_white "散热情况简报")\n"
-MotherBoardSensors="$(sensors | grep -i "^physical \|^core \|^${FanSensorsName}")"
+MotherBoardSensors="$(sensors | grep -i "^${CPUSensorsName} \|^${CoreSensorsName} \|^${FanSensorsName}")"
 for line in ${MotherBoardSensors// /}; do
 	SensorsName="$(expr "${line}" : '\(^[^:]*\)')"
 	SensorsName="${SensorsName,,}"
 	SensorsValue=""
-	if [[ "${SensorsName:0:10}" == "physicalid" ]]; then
+	SensorsNumber="$(expr "${SensorsName}" : '^[a-z]*\([0-9]*\)')"
+	if [[ "${SensorsName}" == "${CPUSensorsName}"* ]]; then
 		SensorsValue="Temperature $(expr "${line}" : '^.*:+\([0-9\.\-]*\)')"
-		SensorsName="处理器${SensorsName:10}:\t"
-	elif [[ "${SensorsName:0:4}" == "core" ]]; then
+		SensorsName="处理器${SensorsNumber}:\t"
+	elif [[ "${SensorsName}" == "${CoreSensorsName}"* ]]; then
 		SensorsValue="Temperature $(expr "${line}" : '^.*:+\([0-9\.\-]*\)')"
-		SensorsName="核心${SensorsName:4}:\t\t"
-	elif [[ "${SensorsName:0:3}" == "${FanSensorsName}" ]]; then
+		SensorsName="核心${SensorsNumber}:\t\t"
+	elif [[ "${SensorsName}" == "${FanSensorsName}"* ]]; then
 		SensorsValue="Rotational $(expr "${line}" : '^.*:\([0-9]*\).*')"
-		SensorsName="风扇${SensorsName:3}:\t\t"
+		SensorsName="风扇${SensorsNumber}:\t\t"
 	fi
 	case "${SensorsValue%% *}" in
 	"Temperature")
-		Temperature="${SensorsValue#* }"
-		FormatSensorsValue ${Temperature} "${CPUSensorsName}"
+		FormatSensorsValue "${SensorsValue#* }" "${CPUSensorsName}"
 		TemperatureRange="$(ValueRange "${TemperatureRange}" "${Temperature}")"
 		[[ "${TemperatureStatus}" == "Microtherm" ]] && MicrothermList="${MicrothermList}${SensorsName%%:*} "
 		[[ "${TemperatureStatus}" == "Overheated" ]] && OverheatedList="${OverheatedList}${SensorsName%%:*} "
 		DetailedList="${DetailedList}${SensorsName}${TemperatureColor}\n"
+		PushNormal="${PushNormal}    ${SensorsName} ${Temperature}${TemperatureUnit}\n"
 		TemperatureStatus=""
 		;;
 	"Rotational")
-		Rotational="${SensorsValue#* }"
-		FormatSensorsValue "${Rotational}" "${FanSensorsName}"
+		FormatSensorsValue "${SensorsValue#* }" "${FanSensorsName}"
 		if [[ "${Rotational}" -gt "0" ]]; then
 			RotationalRange="$(ValueRange "${RotationalRange}" "${Rotational}")"
 			[[ "${RotationalStatus}" == "Failed" ]] && FailedFanList="${FailedFanList}${SensorsName%%:*} "
 			DetailedList="${DetailedList}${SensorsName}${RotationalColor}\n"
+			PushNormal="${PushNormal}    ${SensorsName} ${Rotational}${FanRotationalUnit}\n"
 		fi
 		RotationalStatus=""
 		;;
@@ -165,12 +171,10 @@ done
 [[ -z "${UnavailableList}${FailedFanList}${MicrothermList}${OverheatedList}${Abnormal}" ]] && Briefing="${Briefing}  散热系统检测正常"
 FormatSensorsValue ${TemperatureRange##*|} "${CPUSensorsName}"
 [[ -z "${UnavailableList}" ]] && Briefing="${Briefing}  处理器最高温度:${TemperatureColor}\n" || Briefing="${Briefing}  $(_white "${UnavailableList}")\n"
-[[ -n "${FailedFanList}" ]] && Briefing="${Briefing}  $(_white "${FailedFanList}")$(_red "转速过低")\n" && PushFailed="    ${FailedFanList}转速过低[${RotationalRange%%|*} ${FanRotationalUnit}]\n"
-[[ -n "${OverheatedList}" ]] && Briefing="${Briefing}  $(_white "${OverheatedList}")$(_red "过热")\n" && PushOverheated="    ${OverheatedList}过热[${TemperatureRange##*|} ${TemperatureUnit}]\n"
-[[ -n "${MicrothermList}" ]] && Briefing="${Briefing}  $(_white "${MicrothermList}")$(_cyan "过冷")\n" && PushMicrotherm="    ${MicrothermList}过冷[${TemperatureRange%%|*} ${TemperatureUnit}]\n"
+[[ -n "${FailedFanList}" ]] && Briefing="${Briefing}  $(_white "${FailedFanList}")$(_red "转速过低")\n" && PushFailed="    ${FailedFanList}转速过低 [${RotationalRange%%|*} ${FanRotationalUnit}]\n"
+[[ -n "${OverheatedList}" ]] && Briefing="${Briefing}  $(_white "${OverheatedList}")$(_red "过热")\n" && PushOverheated="    ${OverheatedList}过热 [${TemperatureRange##*|} ${TemperatureUnit}]\n"
+[[ -n "${MicrothermList}" ]] && Briefing="${Briefing}  $(_white "${MicrothermList}")$(_cyan "过冷")\n" && PushMicrotherm="    ${MicrothermList}过冷 [${TemperatureRange%%|*} ${TemperatureUnit}]\n"
 [[ -n "${DetailedList}" ]] && Briefing="${Briefing}${SplitLine}\n${DetailedList}"
-PushNormal="${PushNormal}    散热器：${RotationalRange/|/ - } ${FanRotationalUnit}\n"
-PushNormal="${PushNormal}    处理器：${TemperatureRange/|/ - } ${TemperatureUnit}\n"
 
 TemperatureStatus=""
 TemperatureRange="${Unavailable}"
@@ -207,7 +211,7 @@ for i in {a..z}; do
 	Information="$(expr "${Information}" : '.*\(SMART Attributes Data.*\)SMART Error')"
 	FormatSensorsValue "$(echo "${Information}" | grep "^194 ")" "SMART"
 	FormatSensorsValue "${Attribute%% *}"
-	TemperatureRange="$(ValueRange "${TemperatureRange}" "${Attribute%% *}")"
+	TemperatureRange="$(ValueRange "${TemperatureRange}" "${Temperature}")"
 	[[ "${TemperatureStatus}" == "Microtherm" ]] && MicrothermList="${MicrothermList}${DevicePath##*/} "
 	[[ "${TemperatureStatus}" == "Overheated" ]] && OverheatedList="${OverheatedList}${DevicePath##*/} "
 	TemperatureStatus=""
@@ -216,19 +220,19 @@ for i in {a..z}; do
 	FormatSensorsValue "$(echo "${Information}" | grep "^ *12 ")" "SMART"
 	PowerCycleCount="${Attribute%% *}"
 	DetailedList="${DetailedList}温度: ${TemperatureColor}\t通电: $(_white "${PowerCycleCount}")次，累计$(_white "${PowerOnHours}")小时\n自检: "
-	PushSMART="${DevicePath##*/} "
+	PushNormal="${PushNormal}    设备: ${DevicePath##*/}\t容量: ${Capacity}\t温度: ${Temperature}${TemperatureUnit}\n    \t"
 	for n in ${SMARTAttributes}; do
 		FormatSensorsValue "$(echo "${Information}" | grep "^ *$((16#${n})) ")" "SMART"
 		DetailedList="${DetailedList}${n}[${SMARTAttribute}]\t"
-		PushSMART="${PushSMART}${n}[${Attribute}] "
+		PushNormal="${PushNormal}${n}[${Attribute}] "
 	done
 	if [[ "${SMARTStatus,,}" == "passed" ]]; then
 		DetailedList="${DetailedList}\n\t\t$(_green "自检通过")\n"
 	else
 		FailedDevice="${FailedDevice}${DevicePath##*/} "
 		DetailedList="${DetailedList}\n\t设备$(_white "${SMARTStatus%%，}")，以下是详细自检数据:\n${Information}\n"
-		PushSMARTList="${PushSMARTList}${PushSMART%% }\n"
 	fi
+	PushNormal="${PushNormal}\n"
 done
 [[ -z "${DisableDevice}${FailedDevice}${MicrothermList}${OverheatedList}" ]] && Briefing="${Briefing}  存储设备检测正常"
 FormatSensorsValue ${TemperatureRange##*|}
@@ -238,9 +242,8 @@ Briefing="${Briefing}  设备最高温度:${TemperatureColor}\n"
 [[ -n "${OverheatedList}" ]] && Briefing="${Briefing}  设备 $(_white "${OverheatedList}")$(_red "过热")\n" && PushOverheated="${PushOverheated}    设备 ${OverheatedList}过热[${TemperatureRange##*|} ${TemperatureUnit}]\n"
 [[ -n "${MicrothermList}" ]] && Briefing="${Briefing}  设备 $(_white "${MicrothermList}")$(_cyan "过冷")\n" && PushMicrotherm="${PushMicrotherm}    设备 ${MicrothermList}过冷[${TemperatureRange%%|*} ${TemperatureUnit}]\n"
 [[ -n "${DetailedList}" ]] && Briefing="${Briefing}${DetailedList}"
-PushNormal="${PushNormal}    驱动器：${TemperatureRange/|/ - } ${TemperatureUnit}\n"
 
-DiskUsage="$(df -t vfat -t ext4 -t xfs -h)"
+DiskUsage="$(df -t vfat -t ext4 -t xfs -t btrfs -h)"
 DiskUsage="${DiskUsage//Filesystem/  文件系统}"
 DiskUsage="${DiskUsage//Size/大小}"
 DiskUsage="${DiskUsage//Used/已用}"
@@ -250,28 +253,27 @@ DiskUsage="${DiskUsage//Mounted on/挂载点}"
 Briefing="${Briefing}${SplitLine}\n\t\t$(_white "磁盘使用情况")\n"
 Briefing="${Briefing}${SplitLine}\n${DiskUsage}\n${SplitLine}"
 
-[[ -r "${PushTimeStamp}" ]] && LastPushTime="$(cat "${PushTimeStamp}")"
+[[ -r "${PushTimeStamp}" ]] && LastPushTime="$(cat "${PushTimeStamp}")" || NeedPush="True"
 [[ "$(expr "${PushTime//:/}" : '0*\([0-9]*\)')" -le "$(expr "$(date "+%H%M")" : '0*\([0-9]*\)')" ]] && NeedPush="True"
 [[ "$(expr "${PushTime//:/}" : '0*\([0-9]*\)')" -le "$(expr "${LastPushTime:8:4}" : '0*\([0-9]*\)')" ]] && [[ "${LastPushTime:0:8}" -eq "$(date +%Y%m%d)" ]] && NeedPush=""
 [[ -z "${PushTime}" ]] && NeedPush=""
 NeedPush="${NeedPush}${PushUnavailable}${PushFailed}${PushOverheated}${PushMicrotherm}"
 [[ "${1,,}" == "cron" ]] || echo -e "${Briefing}"
-[[ -z "${PushCMD}" ]] && exit
 [[ -z "${NeedPush}" ]] && echo -e "$(date +%F\ %T) 系统健康检测完成" && exit
 
 [[ -n "${PushUnavailable}" ]] && Overview="检测失败、"
 [[ -n "${PushFailed}" ]] && Overview="${Overview}设备故障、"
 [[ -n "${PushOverheated}${PushMicrotherm}" ]] && Overview="${Overview}温度异常、"
 if [[ -z "${Overview}" ]]; then
-	Overview="<font color='#009900'>运行正常</font>"
+	Overview="${_green}运行正常</font>"
 	Details="${PushNormal}"
 else
-	Overview="<font color='#CC0000'>${Overview%%、}</font>"
+	Overview="${_red}${Overview%%、}</font>"
 	Details="${PushUnavailable}${PushFailed}${PushOverheated}${PushMicrotherm}${PushSMARTList}\n${PushNormal}"
 fi
-MK_title="主机$(hostname)的健康简报"
-MK_text="<font color='#0000CC'>$(date +"%F %T")</font>\n\n"
-MK_text="${MK_text}来自主机<font color='#009900'>$(hostname)</font>的系统健康简报\n"
+MK_title="主机${HostName}的健康简报"
+MK_text="${_blue}$(date +"%F %T")</font>\n\n"
+MK_text="${MK_text}来自主机${_green}${HostName}</font>的系统健康简报\n"
 MK_text="${MK_text}## ${Overview}\n\n详细信息：\n\n${Details}"
 Message_Data="{\"msgtype\":\"markdown\",\"markdown\":{\"title\":\"${MK_title}\",\"text\":\"${MK_text}\"}}"
 if "${PushCMD}" -q "${Message_Data}"; then
